@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#022c22" />
+      <stop offset="50%" stop-color="#064e3b" />
+      <stop offset="100%" stop-color="#020617" />
+    </linearGradient>
+    <linearGradient id="glowGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="50%" stop-color="#14b8a6" />
+      <stop offset="100%" stop-color="#06b6d4" />
+    </linearGradient>
+    <linearGradient id="badgeGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#34d399" />
+      <stop offset="100%" stop-color="#059669" />
+    </linearGradient>
+    <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="16" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    <filter id="softShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.5" />
+    </filter>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+  <rect width="504" height="504" x="4" y="4" rx="108" fill="none" stroke="#10b981" stroke-opacity="0.3" stroke-width="4" />
+
+  <!-- Glowing Ring Aura -->
+  <circle cx="256" cy="256" r="160" fill="none" stroke="url(#glowGrad)" stroke-width="6" opacity="0.4" stroke-dasharray="16 12" />
+  
+  <!-- Outer Radio Pulse Waves -->
+  <circle cx="256" cy="256" r="195" fill="none" stroke="#10b981" stroke-width="3" opacity="0.2" />
+
+  <!-- Main Card Shield / Center Bubble -->
+  <g filter="url(#softShadow)">
+    <circle cx="256" cy="256" r="128" fill="url(#badgeGrad)" />
+    <!-- Glossy reflection overlay -->
+    <path d="M 140 210 Q 256 160 372 210 A 128 128 0 0 0 140 210 Z" fill="#ffffff" opacity="0.2" />
+  </g>
+
+  <!-- WhatsApp Speech Bubble Tail -->
+  <path d="M 180 340 L 140 380 L 210 365 Z" fill="#059669" filter="url(#softShadow)" />
+
+  <!-- Radio Waves & Chat Hub Icon inside -->
+  <g fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" filter="url(#neonGlow)">
+    <!-- Central antenna / broadcast dot -->
+    <circle cx="256" cy="256" r="16" fill="#ffffff" />
+    
+    <!-- Left Waves -->
+    <path d="M 216 226 A 44 44 0 0 0 216 286" />
+    <path d="M 188 204 A 80 80 0 0 0 188 308" />
+    
+    <!-- Right Waves -->
+    <path d="M 296 226 A 44 44 0 0 1 296 286" />
+    <path d="M 324 204 A 80 80 0 0 1 324 308" />
+  </g>
+
+  <!-- Subtle Micro Tag "@" in corner -->
+  <g transform="translate(320, 110)">
+    <circle cx="28" cy="28" r="28" fill="#020617" stroke="#10b981" stroke-width="3" />
+    <text x="28" y="37" font-family="system-ui, sans-serif" font-size="28" font-weight="900" fill="#34d399" text-anchor="middle">@</text>
+  </g>
+</svg>
