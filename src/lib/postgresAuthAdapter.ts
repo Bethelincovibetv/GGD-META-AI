@@ -161,7 +161,7 @@ export async function usePostgresAuthState(
   };
 
   // Read single key from Cloud SQL or memory
-  const readData = async (key: string): Promise<any> => {
+  const readData = async <T = any>(key: string): Promise<T | null> => {
     const sanitizedKey = fixFileName(key);
     if (dbConnected && pool) {
       try {
@@ -170,7 +170,7 @@ export async function usePostgresAuthState(
           [sessionId, sanitizedKey]
         );
         if (res.rows.length > 0) {
-          return parseRowData(res.rows[0].data);
+          return parseRowData(res.rows[0].data) as T;
         }
         return null;
       } catch (error) {
@@ -181,7 +181,7 @@ export async function usePostgresAuthState(
       const data = memoryStore.get(`${sessionId}:${sanitizedKey}`);
       if (!data) return null;
       try {
-        return JSON.parse(data, BufferJSON.reviver);
+        return JSON.parse(data, BufferJSON.reviver) as T;
       } catch {
         return null;
       }
