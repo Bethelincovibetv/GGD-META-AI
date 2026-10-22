@@ -51,31 +51,34 @@ const memoryStore = new Map<string, string>();
  * Google Cloud SQL (direct, SSL, or Unix socket)
  */
 export function createPostgresPool(config?: PostgresAuthConfig): pg.Pool {
-  const connectionString = config?.connectionString || process.env.DATABASE_URL;
-
-  // Google Cloud SQL Unix socket format: /cloudsql/PROJECT:REGION:INSTANCE
-  const cloudSqlSocketPath = process.env.INSTANCE_CONNECTION_NAME 
-    ? `/cloudsql/${process.env.INSTANCE_CONNECTION_NAME}` 
-    : undefined;
-
   const poolConfig: pg.PoolConfig = {
     max: 15,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
   };
 
-  if (connectionString) {
-    poolConfig.connectionString = connectionString;
-    if (process.env.DB_SSL === 'true' || connectionString.includes('sslmode=require')) {
+  // 1. Google Cloud SQL platform-provided environment variables (Cloud SQL Developer Edition)
+  if (process.env.SQL_HOST) {
+    poolConfig.host = process.env.SQL_HOST;
+    poolConfig.user = process.env.SQL_USER || 'postgres';
+    poolConfig.password = process.env.SQL_PASSWORD || '';
+    poolConfig.database = process.env.SQL_DB_NAME || 'baileys_db';
+  } else if (config?.connectionString || process.env.DATABASE_URL) {
+    // 2. Full Connection String (Vercel, Supabase, Neon, or public Cloud SQL)
+    const connStr = config?.connectionString || process.env.DATABASE_URL!;
+    poolConfig.connectionString = connStr;
+    if (process.env.DB_SSL === 'true' || connStr.includes('sslmode=require')) {
       poolConfig.ssl = { rejectUnauthorized: false };
     }
-  } else if (cloudSqlSocketPath) {
-    poolConfig.host = cloudSqlSocketPath;
+  } else if (process.env.INSTANCE_CONNECTION_NAME) {
+    // 3. Google Cloud SQL Unix socket format: /cloudsql/PROJECT:REGION:INSTANCE
+    poolConfig.host = `/cloudsql/${process.env.INSTANCE_CONNECTION_NAME}`;
     poolConfig.user = config?.user || process.env.DB_USER || 'postgres';
     poolConfig.password = config?.password || process.env.DB_PASSWORD || '';
     poolConfig.database = config?.database || process.env.DB_NAME || 'baileys_db';
   } else {
-    poolConfig.host = config?.host || process.env.DB_HOST || 'localhost';
+    // 4. Standard Host & Port parameters
+    poolConfig.host = config?.host || process.env.DB_HOST || '127.0.0.1';
     poolConfig.port = config?.port || Number(process.env.DB_PORT) || 5432;
     poolConfig.user = config?.user || process.env.DB_USER || 'postgres';
     poolConfig.password = config?.password || process.env.DB_PASSWORD || '';
