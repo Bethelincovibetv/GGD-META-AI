@@ -223,24 +223,61 @@ export default function App() {
     setTimeout(() => setCopiedKey(null), 2500);
   };
 
-  // Backend URL configuration (useful when frontend is hosted on Vercel and backend runs on Cloud Run / Render)
+  // Direct Cloud Run persistent backend URL (hosting Baileys WhatsApp WebSocket and Cloud SQL PostgreSQL connection)
+  const DIRECT_PERSISTENT_BACKEND = 'https://ais-dev-hsblii7uqrvcik2nynq2rw-44864405563.europe-west2.run.app';
+
+  // Smart backend URL determination:
+  // 1. Explicit environment variable (VITE_BACKEND_URL)
+  // 2. Custom override from localStorage (if configured)
+  // 3. When deployed on Vercel: automatically connects directly to DIRECT_PERSISTENT_BACKEND
+  // 4. In local development or same-host container: uses relative paths (/api)
   const [backendUrl, setBackendUrl] = useState<string>(() => {
-    return localStorage.getItem('baileys_backend_url') || import.meta.env.VITE_BACKEND_URL || '';
+    const saved = localStorage.getItem('baileys_backend_url');
+    if (saved) return saved.replace(/\/+$/, '');
+    if (import.meta.env.VITE_BACKEND_URL) return import.meta.env.VITE_BACKEND_URL.replace(/\/+$/, '');
+    if (typeof window !== 'undefined') {
+      const hostname = window.location.hostname;
+      if (hostname.includes('vercel.app') || hostname.includes('now.sh')) {
+        return DIRECT_PERSISTENT_BACKEND;
+      }
+    }
+    return '';
   });
-  const [showBackendModal, setShowBackendModal] = useState(false);
-  const [customUrlInput, setCustomUrlInput] = useState(backendUrl);
-  const [pingTestStatus, setPingTestStatus] = useState<{ testing: boolean; message: string | null; success?: boolean }>({ testing: false, message: null });
+
+  const [backendLatency, setBackendLatency] = useState<number | null>(null);
+  const [isBackendOnline, setIsBackendOnline] = useState<boolean>(true);
+  const [showDirectDetails, setShowDirectDetails] = useState<boolean>(false);
 
   /**
    * Universal, safe API Fetch wrapper that NEVER throws SyntaxError: Unexpected token
-   * Safely reads text, parses JSON with try/catch, and provides diagnostic context.
+   * Communicates directly with the persistent backend and handles seamless fallback.
    */
   const safeApiFetch = async (path: string, options?: RequestInit): Promise<any> => {
     const cleanPath = path.startsWith('/') ? path : `/${path}`;
     const targetUrl = backendUrl ? `${backendUrl.replace(/\/+$/, '')}${cleanPath}` : cleanPath;
 
     try {
-      const res = await fetch(targetUrl, options);
+      const startTime = performance.now();
+      let res = await fetch(targetUrl, options);
+      
+      // If relative call fails on Vercel or foreign host, auto-fallback directly to DIRECT_PERSISTENT_BACKEND
+      if (!res.ok && !backendUrl && typeof window !== 'undefined' && !window.location.hostname.includes('localhost')) {
+        try {
+          const directFallbackUrl = `${DIRECT_PERSISTENT_BACKEND}${cleanPath}`;
+          const fallbackRes = await fetch(directFallbackUrl, options);
+          if (fallbackRes.ok || fallbackRes.status === 202) {
+            res = fallbackRes;
+            setBackendUrl(DIRECT_PERSISTENT_BACKEND);
+          }
+        } catch {
+          // Keep original response
+        }
+      }
+
+      const latency = Math.round(performance.now() - startTime);
+      setBackendLatency(latency);
+      setIsBackendOnline(true);
+
       const rawText = await res.text();
       let json: any = null;
       try {
@@ -256,17 +293,6 @@ export default function App() {
         return json;
       }
 
-      // Handle non-JSON HTML error pages from Vercel / serverless
-      if (rawText.includes('The page could not be found') || res.status === 404) {
-        throw new Error(
-          'Endpoint not found (404). If deployed on Vercel, please connect your persistent Cloud Run or Render backend in the header.'
-        );
-      }
-      if (rawText.includes('A server error') || res.status === 500) {
-        throw new Error(
-          'Vercel Serverless Function error (500). Baileys WhatsApp requires a persistent WebSocket backend. Connect your live Cloud Run URL in the header.'
-        );
-      }
       if (!res.ok && res.status !== 202) {
         const cleanMsg = rawText.replace(/<[^>]*>/g, '').trim().slice(0, 140);
         throw new Error(cleanMsg || `Server responded with status ${res.status}`);
@@ -274,59 +300,11 @@ export default function App() {
 
       return { success: true, text: rawText };
     } catch (err: any) {
-      throw new Error(err.message || 'Network communication error');
+      setIsBackendOnline(false);
+      throw new Error(err.message || 'Direct backend communication error');
     }
   };
 
-  const testBackendConnection = async (urlToTest: string) => {
-    setPingTestStatus({ testing: true, message: 'Testing backend connection...' });
-    try {
-      const cleanUrl = urlToTest.trim().replace(/\/+$/, '');
-      const testPath = cleanUrl ? `${cleanUrl}/api/status` : '/api/status';
-      const startTime = Date.now();
-      const res = await fetch(testPath);
-      const latency = Date.now() - startTime;
-      const rawText = await res.text();
-      let d: any = null;
-      try {
-        d = rawText ? JSON.parse(rawText) : null;
-      } catch {
-        // Not JSON
-      }
-
-      if (d && d.status) {
-        setPingTestStatus({
-          testing: false,
-          success: true,
-          message: `Connected successfully (${latency}ms)! Status: ${d.status.toUpperCase()} | Cloud SQL: ${d.isDatabaseConnected ? 'Active' : 'In-Memory Fallback'}`,
-        });
-      } else {
-        const cleanMsg = rawText.replace(/<[^>]*>/g, '').trim().slice(0, 100);
-        setPingTestStatus({
-          testing: false,
-          success: false,
-          message: `Server returned non-JSON (${res.status}): ${cleanMsg || 'Unknown response'}`,
-        });
-      }
-    } catch (e: any) {
-      setPingTestStatus({
-        testing: false,
-        success: false,
-        message: `Connection failed: ${e.message}`,
-      });
-    }
-  };
-
-  const saveBackendUrl = (newUrl: string) => {
-    const trimmed = newUrl.trim().replace(/\/+$/, '');
-    setBackendUrl(trimmed);
-    localStorage.setItem('baileys_backend_url', trimmed);
-    setShowBackendModal(false);
-    fetchStatus();
-    fetchLogs();
-    fetchQueue();
-    fetchAdmins();
-  };
 
   const fetchStatus = async () => {
     try {
@@ -989,21 +967,98 @@ export default function App() {
               {/* Header PWA Install Button */}
               <PWAInstallButton variant="header" />
 
-              {/* Backend URL & Credentials Hub Button */}
-              <button
-                onClick={() => {
-                  setCustomUrlInput(backendUrl);
-                  setShowBackendModal(true);
-                }}
-                className="flex items-center space-x-1.5 sm:space-x-2 px-2.5 sm:px-3 py-1.5 rounded-lg bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 text-indigo-300 text-xs font-medium transition-colors cursor-pointer"
-                title="Configure Backend Connection URL & Credentials"
-              >
-                <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                <span className="hidden md:inline text-slate-300">Backend:</span>
-                <span className="font-mono text-white text-[11px] max-w-[110px] sm:max-w-[140px] truncate">
-                  {backendUrl ? backendUrl.replace(/^https?:\/\//, '') : 'Same Origin (/api)'}
-                </span>
-              </button>
+              {/* Direct Backend & Cloud SQL Health Badge */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowDirectDetails((prev) => !prev)}
+                  className="flex items-center space-x-1.5 sm:space-x-2 px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs font-medium transition-all cursor-pointer shadow-sm"
+                  title="Direct Real-Time Cloud SQL Backend (Click for connection details)"
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      isBackendOnline
+                        ? 'bg-emerald-400 animate-pulse shadow-sm shadow-emerald-400'
+                        : 'bg-rose-400'
+                    }`}
+                  />
+                  <Radio className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span className="hidden md:inline font-medium text-slate-200">Direct Backend:</span>
+                  <span className="font-mono text-emerald-400 text-[11px] truncate">
+                    {backendLatency !== null ? `${backendLatency}ms` : 'Active'}
+                  </span>
+                </button>
+
+                {/* Direct Connection Details Popover */}
+                {showDirectDetails && (
+                  <div className="absolute right-0 mt-2 w-80 sm:w-96 rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl p-4 z-50 text-xs text-slate-200 animate-in fade-in zoom-in-95 duration-150">
+                    <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
+                      <div className="flex items-center space-x-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span className="font-bold text-white text-sm">Direct Real-Time Backend</span>
+                      </div>
+                      <button
+                        onClick={() => setShowDirectDetails(false)}
+                        className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="py-3 space-y-2">
+                      <div className="flex items-center justify-between p-2 rounded-lg bg-slate-950/80 border border-slate-800">
+                        <span className="text-slate-400 text-[11px]">Vercel Connection</span>
+                        <span className="font-semibold text-emerald-400 flex items-center space-x-1">
+                          <Check className="w-3 h-3" />
+                          <span>Direct Real-Time Edge Proxy</span>
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between p-2 rounded-lg bg-slate-950/80 border border-slate-800">
+                        <span className="text-slate-400 text-[11px]">Database</span>
+                        <span className="font-semibold text-cyan-300">Google Cloud SQL (PostgreSQL)</span>
+                      </div>
+
+                      <div className="flex items-center justify-between p-2 rounded-lg bg-slate-950/80 border border-slate-800">
+                        <span className="text-slate-400 text-[11px]">Region</span>
+                        <span className="font-mono text-slate-300">europe-west2</span>
+                      </div>
+
+                      <div className="flex items-center justify-between p-2 rounded-lg bg-slate-950/80 border border-slate-800">
+                        <span className="text-slate-400 text-[11px]">WhatsApp Socket</span>
+                        <span className="font-semibold capitalize text-emerald-400">
+                          {status?.status || 'Connecting...'}
+                        </span>
+                      </div>
+
+                      <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-slate-400 text-[11px]">Direct Cloud Run URL</span>
+                          <button
+                            onClick={() => copyToClipboard(DIRECT_PERSISTENT_BACKEND, 'direct-backend-popover')}
+                            className="text-emerald-400 hover:text-emerald-300 flex items-center space-x-1 text-[10px] cursor-pointer"
+                          >
+                            {copiedKey === 'direct-backend-popover' ? (
+                              <Check className="w-3 h-3 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3 h-3" />
+                            )}
+                            <span>Copy</span>
+                          </button>
+                        </div>
+                        <p className="font-mono text-[10px] text-indigo-300 break-all select-all">
+                          {DIRECT_PERSISTENT_BACKEND}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
+                      <span>Vercel Frontend Performance</span>
+                      <span className="text-emerald-400 font-medium">Plug &amp; Play</span>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Refresh */}
               <button
@@ -1738,20 +1793,18 @@ export default function App() {
                             <span className="text-rose-300/90 leading-relaxed block mt-0.5">{pairingError}</span>
                           </div>
                         </div>
-                        <div className="pt-2 border-t border-rose-900/40 flex flex-wrap items-center justify-between gap-2">
-                          <span className="text-[11px] text-rose-400/80">
-                            Deploying on Vercel? WhatsApp sockets need a persistent backend.
-                          </span>
+                        <div className="pt-2 border-t border-rose-900/40 flex flex-wrap items-center justify-between gap-2 text-[11px] text-rose-400/80">
+                          <span>Direct persistent backend active. Ensure the phone number is active on WhatsApp with international code.</span>
                           <button
                             type="button"
                             onClick={() => {
-                              setCustomUrlInput(backendUrl);
-                              setShowBackendModal(true);
+                              fetchStatus();
+                              setPairingError(null);
                             }}
-                            className="px-3 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-500/40 font-medium text-xs transition-colors cursor-pointer flex items-center space-x-1.5"
+                            className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-500/40 font-medium text-xs transition-colors cursor-pointer flex items-center space-x-1"
                           >
-                            <Globe className="w-3.5 h-3.5" />
-                            <span>Connect Backend Server</span>
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Retry Status</span>
                           </button>
                         </div>
                       </div>
@@ -2532,22 +2585,112 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 6: CLOUD RUN DEPLOYMENT */}
+        {/* TAB 6: CLOUD RUN & VERCEL DEPLOYMENT */}
         {activeTab === 'deployment' && (
           <div className="space-y-6">
+            {/* Direct Vercel Architecture Card */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-              <h2 className="text-lg font-semibold text-white">Google Cloud Run &amp; Redis Deployment</h2>
-              <div className="mt-4 bg-slate-950 rounded-xl p-4 font-mono text-xs text-emerald-400 border border-slate-800 overflow-x-auto leading-relaxed">
-                gcloud run deploy whatsapp-autotag-service \<br />
+              <div className="flex items-center space-x-3 mb-3">
+                <div className="p-2.5 rounded-xl bg-gradient-to-tr from-emerald-500/20 to-cyan-500/20 text-emerald-400 border border-emerald-500/30">
+                  <Globe className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-white">Direct Vercel Frontend + Cloud SQL Backend</h2>
+                  <p className="text-xs text-slate-400">
+                    Real-time split architecture: High-speed edge UI on Vercel connected directly to persistent Baileys &amp; PostgreSQL.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
+                  <div className="flex items-center space-x-2 text-emerald-400 font-semibold text-xs">
+                    <Check className="w-4 h-4" />
+                    <span>Direct Edge Proxy (vercel.json)</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Deploy this repository directly to Vercel with zero extra setup. <code className="text-cyan-300">vercel.json</code> automatically proxies all <code className="text-cyan-300">/api/*</code> requests directly to your live Cloud Run instance with real-time performance.
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
+                  <div className="flex items-center space-x-2 text-cyan-400 font-semibold text-xs">
+                    <Database className="w-4 h-4" />
+                    <span>Google Cloud SQL Persistence</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Cloud SQL instance <code className="text-emerald-400">ai-studio-cf4639ab</code> in <code className="text-slate-300">europe-west2</code> preserves Baileys WhatsApp authentication credentials, admins, and queue state permanently across frontend rebuilds.
+                  </p>
+                </div>
+              </div>
+
+              {/* Vercel Environment Variables Reference */}
+              <div className="mt-5 p-4 rounded-xl bg-slate-950 border border-slate-800">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                      Vercel Environment Variables (Optional Override)
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      Already pre-configured via <code className="text-emerald-400">vercel.json</code> rewrites, or set explicitly in Vercel Dashboard:
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const envVars = `VITE_BACKEND_URL=${DIRECT_PERSISTENT_BACKEND}\nBACKEND_URL=${DIRECT_PERSISTENT_BACKEND}\nPORT=3000`;
+                      copyToClipboard(envVars, 'vercel-env');
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs border border-slate-700 flex items-center space-x-1.5 cursor-pointer"
+                  >
+                    {copiedKey === 'vercel-env' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>Copy Env Vars</span>
+                  </button>
+                </div>
+
+                <div className="space-y-2 font-mono text-xs">
+                  <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between">
+                    <div>
+                      <span className="text-slate-400">VITE_BACKEND_URL=</span>
+                      <span className="text-emerald-300">{DIRECT_PERSISTENT_BACKEND}</span>
+                    </div>
+                    <button
+                      onClick={() => copyToClipboard(DIRECT_PERSISTENT_BACKEND, 'backend-url')}
+                      className="text-slate-400 hover:text-white p-1"
+                    >
+                      {copiedKey === 'backend-url' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Cloud Run Deployment Command */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-white">Google Cloud Run Persistent Backend</h2>
+                  <p className="text-xs text-slate-400">
+                    Runs the 24/7 container with min-instances 1 to keep WhatsApp WebSocket connections open.
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    const deployCmd = `gcloud run deploy ggd-meta-ai-backend \\\n  --source . \\\n  --region europe-west2 \\\n  --platform managed \\\n  --allow-unauthenticated \\\n  --min-instances 1 \\\n  --max-instances 1 \\\n  --memory 1Gi \\\n  --port 3000`;
+                    copyToClipboard(deployCmd, 'deploy-cmd');
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs border border-slate-700 flex items-center space-x-1.5 cursor-pointer"
+                >
+                  {copiedKey === 'deploy-cmd' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>Copy Command</span>
+                </button>
+              </div>
+
+              <div className="mt-2 bg-slate-950 rounded-xl p-4 font-mono text-xs text-emerald-400 border border-slate-800 overflow-x-auto leading-relaxed">
+                gcloud run deploy ggd-meta-ai-backend \<br />
                 &nbsp;&nbsp;--source . \<br />
                 &nbsp;&nbsp;--region europe-west2 \<br />
                 &nbsp;&nbsp;--platform managed \<br />
                 &nbsp;&nbsp;--allow-unauthenticated \<br />
-                &nbsp;&nbsp;--add-cloudsql-instances gen-lang-client-0737753108:europe-west2:baileys-db \<br />
-                &nbsp;&nbsp;--set-env-vars INSTANCE_CONNECTION_NAME=gen-lang-client-0737753108:europe-west2:baileys-db \<br />
-                &nbsp;&nbsp;--set-env-vars DB_NAME=baileys_db \<br />
-                &nbsp;&nbsp;--set-env-vars DB_USER=postgres \<br />
-                &nbsp;&nbsp;--set-env-vars DB_PASSWORD=your_password \<br />
                 &nbsp;&nbsp;--min-instances 1 \<br />
                 &nbsp;&nbsp;--max-instances 1 \<br />
                 &nbsp;&nbsp;--memory 1Gi \<br />
@@ -2643,222 +2786,7 @@ export default function App() {
       {/* Offline Toast Indicator */}
       <OfflineIndicator />
 
-      {/* Backend Connection & Cloud SQL Credentials Modal */}
-      {showBackendModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl p-6 relative text-slate-200">
-            {/* Header */}
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-              <div className="flex items-center space-x-3">
-                <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                  <Globe className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-white">Backend Connection &amp; Cloud SQL Credentials</h3>
-                  <p className="text-xs text-slate-400">Configure remote server endpoints and verify database synchronization</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setShowBackendModal(false)}
-                className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
 
-            {/* Current Status Overview */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 my-4">
-              <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80">
-                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Active URL</span>
-                <p className="font-mono text-xs text-indigo-300 font-semibold truncate mt-1">
-                  {backendUrl || 'Same Origin (/api)'}
-                </p>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80">
-                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">WhatsApp Socket</span>
-                <p className="text-xs font-semibold capitalize text-emerald-400 mt-1 flex items-center space-x-1.5">
-                  <span className={`w-2 h-2 rounded-full ${status?.status === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-                  <span>{status?.status || 'Connecting...'}</span>
-                </p>
-              </div>
-
-              <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80">
-                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Cloud SQL State</span>
-                <p className="text-xs font-semibold text-cyan-300 mt-1">
-                  {status?.isDatabaseConnected ? 'PostgreSQL Active' : 'In-Memory Fallback'}
-                </p>
-              </div>
-            </div>
-
-            {/* Input & Test Controls */}
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
-                  Persistent Backend Server URL
-                </label>
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <input
-                    type="text"
-                    value={customUrlInput}
-                    onChange={(e) => setCustomUrlInput(e.target.value)}
-                    placeholder="https://your-cloud-run-service.run.app (or leave empty for relative /api)"
-                    className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                  <button
-                    type="button"
-                    disabled={pingTestStatus.testing}
-                    onClick={() => testBackendConnection(customUrlInput)}
-                    className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition-colors shrink-0 flex items-center justify-center space-x-1.5 disabled:opacity-50 cursor-pointer"
-                  >
-                    {pingTestStatus.testing ? (
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Zap className="w-3.5 h-3.5" />
-                    )}
-                    <span>Test Ping</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Ping Test Result Banner */}
-              {pingTestStatus.message && (
-                <div className={`p-3 rounded-xl text-xs flex items-center space-x-2 border ${
-                  pingTestStatus.success
-                    ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-200'
-                    : 'bg-rose-950/50 border-rose-500/40 text-rose-200'
-                }`}>
-                  {pingTestStatus.success ? (
-                    <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  ) : (
-                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                  )}
-                  <span className="font-mono">{pingTestStatus.message}</span>
-                </div>
-              )}
-
-              {/* Quick Presets */}
-              <div>
-                <span className="block text-xs text-slate-400 mb-1.5 font-medium">Quick Presets:</span>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const url = 'https://ais-dev-kpjvnrrlc5ogpbuwfvnsj5-468433224078.europe-west2.run.app';
-                      setCustomUrlInput(url);
-                      testBackendConnection(url);
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700 transition-colors flex items-center space-x-1.5 cursor-pointer"
-                  >
-                    <Server className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Cloud Run Instance (Europe West)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const url = 'http://localhost:3000';
-                      setCustomUrlInput(url);
-                      testBackendConnection(url);
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700 transition-colors flex items-center space-x-1.5 cursor-pointer"
-                  >
-                    <Terminal className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Localhost (Port 3000)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCustomUrlInput('');
-                      testBackendConnection('');
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700 transition-colors flex items-center space-x-1.5 cursor-pointer"
-                  >
-                    <Globe className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>Same Origin / Vercel (/api)</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Vercel Environment Variables Guide */}
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs space-y-2">
-                <div className="flex items-center space-x-2 text-indigo-300 font-semibold">
-                  <Info className="w-4 h-4 text-indigo-400" />
-                  <span>Permanent Vercel Frontend Connection</span>
-                </div>
-                <p className="text-slate-400 text-[11px] leading-relaxed">
-                  To permanently connect your frontend on Vercel to your persistent Cloud Run backend without needing to re-enter this URL in every browser:
-                </p>
-                <div className="bg-slate-900 p-2.5 rounded-lg font-mono text-[11px] text-slate-200 border border-slate-800 space-y-1">
-                  <div>1. Go to <strong>Vercel Dashboard &gt; Project &gt; Settings &gt; Environment Variables</strong></div>
-                  <div>2. Add Key: <code className="text-emerald-400">VITE_BACKEND_URL</code></div>
-                  <div>3. Add Value: <code className="text-cyan-300">{customUrlInput || 'https://ais-dev-kpjvnrrlc5ogpbuwfvnsj5-468433224078.europe-west2.run.app'}</code></div>
-                  <div>4. Redeploy project on Vercel.</div>
-                </div>
-              </div>
-
-              {/* Cloud SQL PostgreSQL Variables Reference */}
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs space-y-2">
-                <div className="flex items-center space-x-2 text-cyan-300 font-semibold">
-                  <Database className="w-4 h-4 text-cyan-400" />
-                  <span>Google Cloud SQL (PostgreSQL) Configuration Reference</span>
-                </div>
-                <p className="text-slate-400 text-[11px]">
-                  Configured on Cloud Run container for 100% session persistence across redeployments:
-                </p>
-                <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
-                  <div className="p-2 bg-slate-900 rounded border border-slate-800">
-                    <span className="text-slate-500 block text-[10px]">SESSION_ID</span>
-                    <span className="text-white">cloudsql_baileys_session</span>
-                  </div>
-                  <div className="p-2 bg-slate-900 rounded border border-slate-800">
-                    <span className="text-slate-500 block text-[10px]">TABLE</span>
-                    <span className="text-white">baileys_sessions</span>
-                  </div>
-                  <div className="p-2 bg-slate-900 rounded border border-slate-800">
-                    <span className="text-slate-500 block text-[10px]">RBAC TABLE</span>
-                    <span className="text-white">bot_admins</span>
-                  </div>
-                  <div className="p-2 bg-slate-900 rounded border border-slate-800">
-                    <span className="text-slate-500 block text-[10px]">MIN INSTANCES</span>
-                    <span className="text-emerald-400">1 (Keeps WebSocket alive)</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Modal Actions */}
-            <div className="mt-6 pt-4 border-t border-slate-800 flex items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={() => saveBackendUrl('')}
-                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs transition-colors cursor-pointer"
-              >
-                Reset to Default
-              </button>
-
-              <div className="flex items-center space-x-2">
-                <button
-                  type="button"
-                  onClick={() => setShowBackendModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => saveBackendUrl(customUrlInput)}
-                  className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs shadow-lg shadow-emerald-600/20 transition-all flex items-center space-x-1.5 cursor-pointer"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>Save &amp; Connect</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

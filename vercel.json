@@ -3,11 +3,11 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "/api/index.ts"
+      "destination": "https://ais-dev-hsblii7uqrvcik2nynq2rw-44864405563.europe-west2.run.app/api/$1"
     },
     {
       "source": "/send-broadcast",
-      "destination": "/api/index.ts"
+      "destination": "https://ais-dev-hsblii7uqrvcik2nynq2rw-44864405563.europe-west2.run.app/send-broadcast"
     },
     {
       "source": "/(.*)",
